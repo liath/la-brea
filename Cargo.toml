@@ -1,0 +1,12 @@
+[package]
+name = "la-brea"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.21.2"
+gumdrop = "0.8.1"
+utf8-decode = "1.0.1"
+
+[profile.release]
+strip = true
