@@ -101,11 +101,16 @@ impl Decoder {
                     Ok(deb64) => {
                         let trimmed = Self::trim_leading_null(deb64.clone());
 
+                        // TODO: The constants here were naively chosen but roughly work. A better
+                        // approach would be to actually start extracting the bits at the right
+                        // index. Reminder that base64 takes chunks of 3 input bytes and maps them
+                        // to four output six-bit chars (8*3 => 6*4)
+
                         if extracting {
                             if trimmed.len() >= extract_size {
                                 output.write_all(&trimmed[0..extract_size]);
                                 println!("extracted {} bytes to output", trimmed.len());
-                                output.write_all(&[0; 512]);
+                                output.write_all(&[0; 512]); // append tar required waste
                                 break;
                             }
                         } else if trimmed.len() >= 136 {
@@ -131,9 +136,9 @@ impl Decoder {
                             }
                         }
                     }
-                    Err(error) => {
+                    Err(_error) => {
                         // continue pulling bytes until we resolve the parse error
-                        // println!("error: {}", error);
+                        // println!("error: {}", _error);
                     }
                 }
             } else {
