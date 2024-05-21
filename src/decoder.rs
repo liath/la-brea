@@ -108,9 +108,15 @@ impl Decoder {
 
                         if extracting {
                             if trimmed.len() >= extract_size {
-                                output.write_all(&trimmed[0..extract_size]);
+                                if let Err(_) = output.write_all(&trimmed[0..extract_size]) {
+                                    println!("Failed to write extracted file")
+                                }
                                 println!("extracted {} bytes to output", trimmed.len());
-                                output.write_all(&[0; 512]); // append tar required waste
+
+                                if let Err(_) = output.write_all(&[0; 512]) {
+                                    // append tar required waste
+                                    println!("Failed to write tar waste to extracted file")
+                                }
                                 break;
                             }
                         } else if trimmed.len() >= 136 {
