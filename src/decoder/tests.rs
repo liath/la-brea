@@ -47,7 +47,7 @@ fn decode_trifid() {
 }
 
 #[test]
-fn encode_big() {
+fn decode_big() {
     let pk = PolymorphicKey::new(
         String::from(""),
         String::from("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"),
@@ -65,8 +65,32 @@ fn encode_big() {
 
     decoder.decode();
 
-    let expected = fs::read_to_string("./fixtures/expected-encoder-big.txt")
+    let expected = fs::read_to_string("./fixtures/expected-decoder-big.txt")
         .expect("failed to load expected output");
     let res = fs::read_to_string(output).expect("failed to read output");
+    assert_eq!(res, expected);
+}
+
+#[test]
+fn decode_and_extract_name() {
+    let pk = PolymorphicKey::new(
+        String::from(""),
+        String::from("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"),
+        Vec::from([4, 4, 4]),
+    );
+
+    let output = String::from("./tmp/test-decoder-goots.tar");
+    let decoder = Decoder::new(
+        String::from("./fixtures/goots.la-brea"),
+        output.clone(),
+        pk,
+        0,
+        String::from("goots.jpg"),
+    );
+
+    decoder.decode();
+
+    let expected = fs::read("./fixtures/goots.tar.actual").expect("failed to load expected output");
+    let res = fs::read(output).expect("failed to read output");
     assert_eq!(res, expected);
 }
