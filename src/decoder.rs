@@ -71,11 +71,11 @@ impl Decoder {
         let meta = input.metadata().expect("Failed to stat input");
         let length = meta.len();
 
-        let mut header_buf = Vec::new();
+        let mut buf = Vec::new();
 
         let mut index = 0;
         let mut extracting = false;
-        let mut extract_size = 0;
+        let mut extract_size = 0 as i64;
         let mut header_start = 0;
         let mut skip = 0;
         while index < length {
@@ -99,89 +99,103 @@ impl Decoder {
             let sym = self.pk.get_symbol_for_coords(coords);
             //println!("out: {}", sym);
 
-            // TODO: cccccyyyyycccccllloooooommmmaaaatttiiiiiiccccccccc C O M P L E X I T Y (complicity?)
-            // TODO: we could just write chunks of input into the output as we which would spare
-            //       holding it all in memory
-            if list_mode || extract_mode {
-                header_buf.push(sym as u8);
+            index += 1;
 
-                // only check at base64 chunk size
-                if header_buf.len() % 4 == 0 {
-                    // println!("header b64: {:x?}", header_buf);
-                    match general_purpose::STANDARD_NO_PAD.decode(header_buf.clone()) {
-                        Ok(deb64) => {
-                            let trimmed = (&deb64[skip..]).to_vec();
-                            if extracting {
-                                if trimmed.len() >= extract_size {
-                                    if let Err(_) = output.write_all(&trimmed[0..extract_size]) {
-                                        println!("Failed to write extracted file")
-                                    }
-                                    println!("extracted {} bytes to output", trimmed.len());
-
-                                    // TODO: instead of extracting nulls we could fill the end of the
-                                    // record with zeros for basically free
-                                    // if let Err(_) = output.write_all(&[0; 0x2200]) {
-                                    //     // append tar required waste
-                                    //     println!("Failed to write tar waste to extracted file")
-                                    // }
-                                    break;
-                                }
-                            } else if trimmed.len() >= 136 {
-                                println!(
-                                    "header start: {}, end: {}, trimmed: {:x?}",
-                                    header_start, index, trimmed
-                                );
-
-                                let (filename, size) = Self::parse_header(trimmed.clone());
-                                println!("name: {}, size: {}, index: {}", filename, size, index);
-
-                                let tar_length =
-                                    (((512 + size) as f32 / tar_record_size as f32).ceil() as u64)
-                                        * tar_record_size;
-
-                                if extract_mode && filename == self.extract_name {
-                                    extracting = true;
-                                    extract_size = tar_length as usize;
-                                    println!(
-                                        "Found target file, extracting {} byte tar now",
-                                        extract_size
-                                    );
-                                } else {
-                                    // skip to next file
-                                    let new_index =
-                                        header_start + Self::base64_ratio(tar_length) - 1; // counts from zero
-
-                                    // the chunk sizing of base64 and the record sizes of tar
-                                    // guarantee that we'll always need to skip the first byte of
-                                    // subsequent records. I think, I left this as a whole variable
-                                    // instead of just doing a fixed offset in case I'm wrong
-                                    skip = 1;
-
-                                    println!("index jumped {} -> {}", index, new_index);
-
-                                    // tar adds 0x2200 zero bytes for mysterious reasons
-                                    // the -4 pulls us back one chunk of base64, which encodes 3
-                                    // input bytes into 4 output ascii chars. This may cause the
-                                    // header_buf to accumulate some null bytes from the waste at
-                                    // the end of the previous file but we can handle that
-                                    index = new_index;
-
-                                    header_buf = Vec::new();
-                                    header_start = index;
-                                }
-                            }
-                        }
-                        Err(_error) => {
-                            // continue pulling bytes until we resolve the parse error
-                            // println!("error: {}", _error);
-                        }
-                    }
-                }
-            } else {
-                Self::write_at(&mut output, index, sym as u8);
+            if !list_mode && !extract_mode {
+                Self::write_at(&mut output, index - 1, sym as u8);
+                continue;
             }
 
-            index += 1;
+            buf.push(sym as u8);
+
+            // only check at base64 chunk size
+            if buf.len() % 4 != 0 {
+                continue;
+            }
+
+            // println!("header b64: {:x?}", buf);
+            let trimmed;
+            match general_purpose::STANDARD_NO_PAD.decode(buf.clone()) {
+                Ok(deb64) => {
+                    trimmed = deb64[skip..].to_vec();
+                }
+                Err(_error) => {
+                    // continue pulling bytes until we resolve the parse error
+                    println!("error: {}", _error);
+                    continue;
+                }
+            }
+
+            if extracting {
+                // TODO: experiment with other write chunks sizes
+                if trimmed.len() < 1024 && trimmed.len() < extract_size as usize {
+                    continue;
+                }
+                skip = 0;
+
+                if let Err(_) = output.write_all(&trimmed) {
+                    println!("Failed to write extracted file")
+                }
+                extract_size -= trimmed.len() as i64;
+                println!(
+                    "extracted {} bytes to output, {} remaining",
+                    trimmed.len(),
+                    extract_size
+                );
+                buf = Vec::new();
+
+                // TODO: instead of extracting nulls we could fill the end of the
+                // record with zeros for basically free
+                // if let Err(_) = output.write_all(&[0; 0x2200]) {
+                //     // append tar required waste
+                //     println!("Failed to write tar waste to extracted file")
+                // }
+
+                if extract_size == 0 {
+                    break;
+                }
+            } else if trimmed.len() >= 136 {
+                println!(
+                    "header start: {}, end: {}, trimmed: {:x?}",
+                    header_start, index, trimmed
+                );
+
+                let (filename, size) = Self::parse_header(trimmed.clone());
+                println!("name: {}, size: {}, index: {}", filename, size, index);
+
+                let tar_length = (((512 + size) as f32 / tar_record_size as f32).ceil() as u64)
+                    * tar_record_size;
+
+                if extract_mode && filename == self.extract_name {
+                    extracting = true;
+                    extract_size = tar_length as i64;
+                    println!(
+                        "Found target file, extracting {} byte tar now",
+                        extract_size
+                    );
+                } else {
+                    // skip to next file
+                    let new_index = header_start + Self::base64_ratio(tar_length);
+
+                    // the chunk sizing of base64 and the record sizes of tar
+                    // guarantee that we'll always need to skip the first byte of
+                    // subsequent records. I think, I left this as a whole variable
+                    // instead of just doing a fixed offset in case I'm wrong
+                    skip = 1;
+
+                    println!("index jumped {} -> {}", index, new_index);
+
+                    // tar adds 0x2200 zero bytes for mysterious reasons
+                    // the -4 pulls us back one chunk of base64, which encodes 3
+                    // input bytes into 4 output ascii chars. This may cause the
+                    // buf to accumulate some null bytes from the waste at
+                    // the end of the previous file but we can handle that
+                    index = new_index;
+
+                    buf = Vec::new();
+                    header_start = index;
+                }
+            }
         }
     }
 
