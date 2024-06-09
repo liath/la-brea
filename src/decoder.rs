@@ -64,8 +64,8 @@ impl Decoder {
             }
         }
 
-        // tar record size
         let tar_record_size = 512 * 20;
+        let tar_header_size = Self::base64_ratio(136) as usize;
 
         let dimensionality = self.pk.dimensionality() as u64;
         let meta = input.metadata().expect("Failed to stat input");
@@ -113,7 +113,12 @@ impl Decoder {
                 continue;
             }
 
-            // println!("header b64: {:x?}", buf);
+            if (!extracting && buf.len() <= tar_header_size)
+                || (extracting && buf.len() < extract_size as usize)
+            {
+                continue;
+            }
+
             let trimmed;
             match general_purpose::STANDARD_NO_PAD.decode(buf.clone()) {
                 Ok(deb64) => {
