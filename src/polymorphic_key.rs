@@ -14,7 +14,7 @@ impl PolymorphicKey {
             panic!("Keyspace defined by shape is different than given password+alphabet ({} vs {}), check your parameters!", key_len, shape_size)
         }
 
-        return PolymorphicKey { key, shape: shape };
+        return PolymorphicKey { key, shape };
     }
 
     pub fn get_coords_for_symbol(&self, symbol: char) -> Vec<u8> {
