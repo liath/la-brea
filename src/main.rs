@@ -3,10 +3,12 @@ extern crate base64;
 mod cli_args;
 mod decoder;
 mod polymorphic_key;
+mod reader;
 
 use decoder::Decoder;
 use gumdrop::Options;
 use polymorphic_key::PolymorphicKey;
+use reader::DecodingReader;
 use std::fs;
 
 fn parse_shape(s: String) -> Vec<u8> {
