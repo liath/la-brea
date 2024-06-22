@@ -2,20 +2,18 @@ extern crate base64;
 
 use super::*;
 use base64::{engine::general_purpose, Engine as _};
+use reader::DecodingReader;
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
 
 #[derive(Debug)]
 pub struct Decoder {
-    input: String,
+    source: DecodingReader<File>,
     output: String,
     extract_name: String,
-    pk: PolymorphicKey,
-    group_size: u64,
 }
 
 impl Decoder {
@@ -26,22 +24,19 @@ impl Decoder {
         group_size: u64,
         extract_name: String,
     ) -> Decoder {
+        let source_f = File::open(input.clone()).expect("Failed to open input for read");
+        let source = DecodingReader::new(source_f, pk, group_size);
+
         let decoder = Decoder {
-            input: input.clone(),
+            source,
             output: output.clone(),
             extract_name: extract_name.clone(),
-            pk,
-            group_size,
         };
-
-        fs::metadata(input).expect("Failed to stat input file");
 
         return decoder;
     }
 
-    pub fn decode(&self) {
-        let mut input = File::open(self.input.clone()).expect("Failed to open input for read");
-
+    pub fn decode(&mut self) {
         let mut output = File::open("/dev/null").expect("Couldn't open /dev/null???");
         let list_mode = !(self.output.len() > 0);
         let mut extract_mode = false;
@@ -67,9 +62,7 @@ impl Decoder {
         let tar_record_size = 512 * 20;
         let tar_header_size = Self::base64_ratio(136) as usize;
 
-        let dimensionality = self.pk.dimensionality() as u64;
-        let meta = input.metadata().expect("Failed to stat input");
-        let length = meta.len();
+        let length = self.source.len;
 
         let mut buf = Vec::new();
 
@@ -79,25 +72,8 @@ impl Decoder {
         let mut header_start = 0;
         let mut skip = 0;
         while index < length {
-            let mut coords = Vec::new();
-            for dimension in 0..dimensionality {
-                let at = index + (dimension * length);
-                let col = at / dimensionality;
-                let row = at % dimensionality;
-
-                let c = Self::read_at(&mut input, col) as char;
-                if !self.pk.is_symbol_encodable(c) {
-                    println!("got unencodable symbol? {}", c);
-                    continue;
-                }
-
-                let bit = self.pk.get_coords_for_symbol(c)[row as usize];
-                // println!("index: {}, col: {}, row: {} -> {}", index, col, row, bit);
-                coords.push(bit);
-            }
-
-            let sym = self.pk.get_symbol_for_coords(coords);
-            //println!("out: {}", sym);
+            let sym = self.source.read_one();
+            println!("out: {}", sym as char);
 
             index += 1;
 
@@ -190,38 +166,16 @@ impl Decoder {
 
                     println!("index jumped {} -> {}", index, new_index);
 
-                    // tar adds 0x2200 zero bytes for mysterious reasons
-                    // the -4 pulls us back one chunk of base64, which encodes 3
-                    // input bytes into 4 output ascii chars. This may cause the
-                    // buf to accumulate some null bytes from the waste at
-                    // the end of the previous file but we can handle that
                     index = new_index;
+                    self.source
+                        .seek(SeekFrom::Start(index))
+                        .expect("failed to jump to next tar index");
 
                     buf = Vec::new();
                     header_start = index;
                 }
             }
         }
-    }
-
-    fn read_at(f: &mut File, at: u64) -> u8 {
-        f.seek(SeekFrom::Start(at))
-            .expect("Failed to seek input to beginning");
-
-        let mut buf: [u8; 1] = [0];
-        // not sure we need to do this
-        loop {
-            match f.read(&mut buf) {
-                Ok(_) => {
-                    break;
-                }
-                Err(error) => {
-                    panic!("Got error reading input byte: {:?}", error)
-                }
-            }
-        }
-
-        return buf[0];
     }
 
     fn write_at(f: &mut File, at: u64, val: u8) {

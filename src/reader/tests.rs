@@ -12,7 +12,9 @@ fn basic() {
     let source = Cursor::new(b"MMEL");
 
     let mut out = [0, 0, 0, 0];
-    DecodingReader::new(source, pk, 4).read(&mut out);
+    DecodingReader::new(source, pk, 4)
+        .read(&mut out)
+        .expect("failed to read?");
 
     assert_eq!(std::str::from_utf8(&out).expect(""), "MEOW");
 }

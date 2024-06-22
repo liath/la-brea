@@ -1,4 +1,5 @@
 use super::*;
+use std::fs;
 
 #[test]
 fn decode_bifid() {
@@ -9,7 +10,7 @@ fn decode_bifid() {
     );
 
     let output = String::from("./tmp/test-decoder-bifid-out.txt");
-    let decoder = Decoder::new(
+    let mut decoder = Decoder::new(
         String::from("./fixtures/test-decoder-bifid-in.txt"),
         output.clone(),
         pk,
@@ -32,7 +33,7 @@ fn decode_trifid() {
     );
 
     let output = String::from("./tmp/test-decoder-trifid-out.txt");
-    let decoder = Decoder::new(
+    let mut decoder = Decoder::new(
         String::from("./fixtures/test-decoder-trifid-in.txt"),
         output.clone(),
         pk,
@@ -55,7 +56,7 @@ fn decode_big() {
     );
 
     let output = String::from("./tmp/test-decoder-big-out.txt");
-    let decoder = Decoder::new(
+    let mut decoder = Decoder::new(
         String::from("./fixtures/test-decoder-big-in.txt"),
         output.clone(),
         pk,
@@ -80,7 +81,7 @@ fn decode_and_extract_name() {
     );
 
     let output = String::from("./tmp/test-decoder-goots.tar");
-    let decoder = Decoder::new(
+    let mut decoder = Decoder::new(
         String::from("./fixtures/goots.la-brea"),
         output.clone(),
         pk,

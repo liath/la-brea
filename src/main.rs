@@ -8,8 +8,6 @@ mod reader;
 use decoder::Decoder;
 use gumdrop::Options;
 use polymorphic_key::PolymorphicKey;
-use reader::DecodingReader;
-use std::fs;
 
 fn parse_shape(s: String) -> Vec<u8> {
     let mut res = Vec::new();
@@ -38,7 +36,7 @@ fn main() {
     let output_s = options.output.unwrap_or(String::from(""));
     let extract_name_s = options.extract_name.unwrap_or(String::from(""));
     let group_size = options.group_size.unwrap_or(0);
-    let decoder = Decoder::new(input_s, output_s, key, group_size, extract_name_s);
+    let mut decoder = Decoder::new(input_s, output_s, key, group_size, extract_name_s);
     println!("{:?}", decoder);
 
     decoder.decode();

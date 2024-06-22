@@ -1,6 +1,7 @@
 use super::*;
 use std::io::{self, Read, Seek, SeekFrom};
 
+#[derive(Debug)]
 pub struct DecodingReader<T> {
     // underlying encoded content, must be able to read/seek
     source: T,
@@ -8,22 +9,32 @@ pub struct DecodingReader<T> {
     pk: PolymorphicKey,
     // how many chars are encoded together
     group_size: u64,
-    _source_len: u64,
+    pub len: u64,
 }
 
 impl<T> DecodingReader<T>
 where
     T: Read + Seek,
 {
-    pub fn new(source: T, pk: PolymorphicKey, group_size: u64) -> DecodingReader<T> {
+    pub fn new(mut source: T, pk: PolymorphicKey, group_size: u64) -> DecodingReader<T> {
+        let len = source
+            .seek(SeekFrom::End(0))
+            .expect("Couldn't get length of source");
+        source
+            .seek(SeekFrom::Start(0))
+            .expect("Couldn't return source to its starting position");
+
+        let mut gs = group_size;
+        if group_size <= 0 {
+            gs = len;
+        }
+
         let dr = DecodingReader {
             source,
             pk,
-            group_size,
-            _source_len: 0,
+            group_size: gs,
+            len,
         };
-
-        // should we validate inputs?
 
         return dr;
     }
@@ -49,7 +60,7 @@ where
         return buf[0];
     }
 
-    fn read_one(&mut self) -> u8 {
+    pub fn read_one(&mut self) -> u8 {
         let dimensionality = self.pk.dimensionality() as u64;
         let index = self
             .source
@@ -81,18 +92,6 @@ where
 
         return self.pk.get_symbol_for_coords(coords) as u8;
     }
-
-    fn source_len(&mut self) -> usize {
-        let res = self
-            .source
-            .seek(SeekFrom::End(0))
-            .expect("Couldn't get length of source");
-        self.source
-            .seek(SeekFrom::Start(0))
-            .expect("Couldn't return source to its starting position");
-
-        return res as usize;
-    }
 }
 
 impl<T> Read for DecodingReader<T>
@@ -100,12 +99,21 @@ where
     T: Read + Seek,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        println!("reading {} bytes", self.source_len(),);
-        for i in 0..self.source_len() {
+        println!("reading {} bytes", self.len);
+        for i in 0..self.len as usize {
             buf[i] = self.read_one();
             println!("buf: {:x?}", buf);
         }
         Ok(buf.len())
+    }
+}
+
+impl<T> Seek for DecodingReader<T>
+where
+    T: Read + Seek,
+{
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        return self.source.seek(pos);
     }
 }
 
