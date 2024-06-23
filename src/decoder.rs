@@ -2,7 +2,7 @@ extern crate base64;
 
 use super::*;
 use base64::{engine::general_purpose, Engine as _};
-use reader::DecodingReader;
+use polyfid::DecodingReader;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Seek;

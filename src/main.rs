@@ -2,12 +2,10 @@ extern crate base64;
 
 mod cli_args;
 mod decoder;
-mod polymorphic_key;
-mod reader;
 
 use decoder::Decoder;
 use gumdrop::Options;
-use polymorphic_key::PolymorphicKey;
+use polyfid::PolymorphicKey;
 
 fn parse_shape(s: String) -> Vec<u8> {
     let mut res = Vec::new();
