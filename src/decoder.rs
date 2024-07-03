@@ -2,7 +2,7 @@ extern crate base64;
 
 use super::*;
 use base64::{engine::general_purpose, Engine as _};
-use polyfid::DecodingReader;
+use polyfid::Reader;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Seek;
@@ -11,7 +11,7 @@ use std::io::Write;
 
 #[derive(Debug)]
 pub struct Decoder {
-    source: DecodingReader<File>,
+    source: Reader<File>,
     output: String,
     extract_name: String,
 }
@@ -25,20 +25,18 @@ impl Decoder {
         extract_name: String,
     ) -> Decoder {
         let source_f = File::open(input.clone()).expect("Failed to open input for read");
-        let source = DecodingReader::new(source_f, pk, group_size);
+        let source = Reader::new(source_f, pk, group_size, String::from("decode"));
 
-        let decoder = Decoder {
+        Decoder {
             source,
             output: output.clone(),
             extract_name: extract_name.clone(),
-        };
-
-        return decoder;
+        }
     }
 
     pub fn decode(&mut self) {
         let mut output = File::open("/dev/null").expect("Couldn't open /dev/null???");
-        let list_mode = !(self.output.len() > 0);
+        let list_mode = self.output.is_empty();
         let mut extract_mode = false;
         if list_mode {
             println!("running in list mode");
@@ -51,11 +49,11 @@ impl Decoder {
                 .open(self.output.clone())
                 .expect("Failed to open output for read/write");
 
-            if self.extract_name.len() > 0 {
+            if self.extract_name.is_empty() {
+                println!("running in decode mode");
+            } else {
                 extract_mode = true;
                 println!("running in extract mode");
-            } else {
-                println!("running in decode mode");
             }
         }
 
@@ -68,21 +66,21 @@ impl Decoder {
 
         let mut index = 0;
         let mut extracting = false;
-        let mut extract_size = 0 as i64;
+        let mut extract_size = 0;
         let mut header_start = 0;
         let mut skip = 0;
         while index < length {
             let sym = self.source.read_one();
-            println!("out: {}", sym as char);
+            // println!("out: {}", sym as char);
 
             index += 1;
 
             if !list_mode && !extract_mode {
-                Self::write_at(&mut output, index - 1, sym as u8);
+                Self::write_at(&mut output, index - 1, sym);
                 continue;
             }
 
-            buf.push(sym as u8);
+            buf.push(sym);
 
             // only check at base64 chunk size
             if buf.len() % 4 != 0 {
@@ -95,17 +93,14 @@ impl Decoder {
                 continue;
             }
 
-            let trimmed;
-            match general_purpose::STANDARD_NO_PAD.decode(buf.clone()) {
-                Ok(deb64) => {
-                    trimmed = deb64[skip..].to_vec();
-                }
+            let trimmed = match general_purpose::STANDARD_NO_PAD.decode(buf.clone()) {
+                Ok(deb64) => deb64[skip..].to_vec(),
                 Err(_error) => {
                     // continue pulling bytes until we resolve the parse error
                     println!("error: {}", _error);
                     continue;
                 }
-            }
+            };
 
             if extracting {
                 // TODO: experiment with other write chunks sizes
@@ -114,7 +109,7 @@ impl Decoder {
                 }
                 skip = 0;
 
-                if let Err(_) = output.write_all(&trimmed) {
+                if output.write_all(&trimmed).is_err() {
                     println!("Failed to write extracted file")
                 }
                 extract_size -= trimmed.len() as i64;
@@ -200,34 +195,34 @@ impl Decoder {
 
     fn parse_header(bytes: Vec<u8>) -> (String, u64) {
         let mut tmp = Vec::new();
-        for i in 0..100 {
-            if bytes[i] == 0 {
+        for byte in bytes.iter().take(100) {
+            if *byte == 0 {
                 break;
             }
-            tmp.push(bytes[i] as char);
+            tmp.push(*byte as char);
         }
 
         let filename: String = tmp.into_iter().collect();
 
         tmp = Vec::new();
-        for i in 124..136 {
-            if bytes[i] == 0 {
+        for byte in bytes.iter().take(136).skip(124) {
+            if *byte == 0 {
                 break;
             }
-            tmp.push(bytes[i] as char);
+            tmp.push(*byte as char);
         }
 
         let size: String = tmp.into_iter().collect();
 
         println!("header | name: {}, size: {}", filename, size);
-        return (
+        (
             filename,
             u64::from_str_radix(&size, 8).expect("Failed to parse tar entry size"),
-        );
+        )
     }
 
     fn base64_ratio(i: u64) -> u64 {
-        return (i / 3) as u64 * 4;
+        (i / 3) * 4
     }
 }
 

@@ -9,13 +9,12 @@ use polyfid::PolymorphicKey;
 
 fn parse_shape(s: String) -> Vec<u8> {
     let mut res = Vec::new();
-    for s in s.split("x") {
-        res.push(
-            u8::from_str_radix(s, 10)
+    for s in s.split('x') {
+        res.push(s.parse()
                 .expect("Unexpected value in shape string, shapes must be decimal integers separated by `x`. Example: `3x3x3` for trifid."),
         );
     }
-    return res;
+    res
 }
 
 fn main() {

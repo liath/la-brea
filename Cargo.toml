@@ -11,3 +11,8 @@ polyfid = { path = '../polyfid/' }
 
 [profile.release]
 strip = true
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
