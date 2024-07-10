@@ -1,0 +1,252 @@
+use super::*;
+use std::cmp::min;
+use std::collections::HashMap;
+use std::io::{self, Read, Seek, SeekFrom};
+
+#[derive(Debug)]
+pub struct Source<T> {
+    name: String,
+    size: u64,
+    source: T,
+}
+
+#[derive(Debug)]
+pub struct Reader<T> {
+    // file ids in the order they should be returned
+    index: Vec<u64>,
+    // map file names to an id, this cuts down on memory usage when a tar has a
+    // bunch of references to the same file (which is specifically why I wrote
+    // this library lol)
+    rolodex: HashMap<String, u64>,
+    rolodex_next: u64,
+    // map of file IDs to their underlying ReadSeeks
+    sources: HashMap<u64, Source<T>>,
+}
+
+impl<T> Reader<T>
+where
+    T: Read + Seek,
+{
+    pub fn new() -> Reader<T> {
+        Reader {
+            index: Vec::new(),
+            rolodex: HashMap::new(),
+            rolodex_next: 0,
+            sources: HashMap::new(),
+        }
+    }
+
+    pub fn append_entry(&mut self, name: String, mut source: T) {
+        // create a rolodex entry if needed
+        let id = if self.rolodex.contains_key(&name) {
+            self.rolodex
+                .get(&name)
+                .expect("rolodex has entry but not a value?")
+                .clone()
+        } else {
+            let i = self.rolodex_next;
+            self.rolodex_next += 1;
+            self.rolodex.insert(name.clone(), i);
+            i
+        };
+
+        // create a sources entry if needed
+        if !self.sources.contains_key(&id) {
+            let size = source
+                .seek(SeekFrom::End(0))
+                .expect("Couldn't get length of source");
+            source
+                .seek(SeekFrom::Start(0))
+                .expect("Couldn't rewind source");
+
+            self.sources.insert(
+                id,
+                Source {
+                    name: name.clone(),
+                    size,
+                    source,
+                },
+            );
+        }
+
+        // append another copy of this source to the output
+        self.index.push(id);
+    }
+
+    // TODO: made this pub for testing but it ought to be checked through the reader
+    pub fn header(&mut self, id: u64) -> [u8; 512] {
+        // chksum is initialized to spaces per:
+        // https://www.gnu.org/software/tar/manual/html_node/Standard.html
+        let mut buf = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, // name
+            0x30, 0x30, 0x30, 0x30, 0x36, 0x36, 0x34, 0x00, // mode
+            0x30, 0x30, 0x30, 0x31, 0x37, 0x35, 0x30, 0x00, // uid
+            0x30, 0x30, 0x30, 0x31, 0x37, 0x35, 0x30, 0x00, // gid
+            0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x00, // size
+            0x31, 0x34, 0x36, 0x32, 0x33, 0x32, 0x36, 0x30, 0x35, 0x33, 0x31, 0x00, // mtime
+            0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, // chksum
+            0x30, // typeflag
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, // linkname
+            0x75, 0x73, 0x74, 0x61, 0x72, 0x20, // magic
+            0x20, 0x00, // version
+            0x6c, 0x69, 0x61, 0x74, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, // uname
+            0x6c, 0x69, 0x61, 0x74, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, // gname
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // devmajor
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // devminor
+            // prefix ->
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let f = self.sources.get(&id).expect("failed to retrieve source");
+        for (i, c) in f.name.chars().enumerate() {
+            if i == 100 {
+                break;
+            }
+
+            buf[i] = c as u8;
+        }
+
+        let size = format!("{:0>11o}", f.size);
+        println!("size: {}", size);
+        for (i, c) in size.chars().enumerate() {
+            buf[124 + i] = c as u8;
+        }
+
+        let chksum = format!("{:0>6o}", buf.iter().fold(0u64, |sum, i| sum + (*i as u64)));
+        println!("chksum: {}", chksum);
+        for (i, c) in chksum.chars().enumerate() {
+            buf[148 + i] = c as u8;
+        }
+        buf[154] = 0;
+
+        buf
+    }
+
+    // NOTE: we dont need to generate the next header as we cross file boundaries, return what you've got and how many bytes you read and the Read implementation will make another request where we'll start nicely at the next file header
+    /*
+    fn read_at(&mut self, at: u64) -> u8 {
+        self.source
+            .seek(SeekFrom::Start(at))
+            .expect("Failed to seek input to beginning");
+
+        let mut buf: [u8; 1] = [0];
+        self.source
+            .read_exact(&mut buf)
+            .expect("Got error reading input byte: {:?}");
+        buf[0]
+    }
+
+    pub fn read_one(&mut self) -> u8 {
+        let dimensionality = self.pk.dimensionality() as u64;
+        let mut coords = Vec::new();
+
+        let mut gs = self.group_size;
+        if self.len - (self.len % gs) <= self.pos {
+            gs = self.len % gs
+        }
+
+        let floor = (self.pos / self.group_size) * self.group_size;
+        for dimension in 0..dimensionality {
+            let (at, col, row);
+            match self.mode.as_str() {
+                "decode" => {
+                    // `at` is the position in the coordinates counted vertically
+                    // 0369c ----- | so an at of 4 would be the X on the left here,
+                    // 147ad -X--- | giving `col` and `row` of: (1, 1)
+                    // 258be ----- |
+                    at = (self.pos - floor) + (gs * dimension);
+                    col = at / dimensionality;
+                    row = at % dimensionality;
+                }
+                "encode" => {
+                    // `at` is the position in the coordinates counted horizontally
+                    // 01234 ----X | so an at of 4 would be the X on the left here,
+                    // 56789 ----- | giving `col` and `row` of: (4, 0)
+                    // abcde ----- |
+                    at = ((self.pos - floor) * dimensionality) + dimension;
+                    col = at % gs;
+                    row = at / gs;
+                }
+                _ => unreachable!("No mode specified"),
+            }
+
+            let c = self.read_at(floor + col) as char;
+            if !self.pk.is_symbol_encodable(c) {
+                println!("got unencodable symbol? {} [{:#04x}]", c, c as u8);
+                continue;
+            }
+
+            // print!("pos: {}, at: {}, col: {}, row: {}", self.pos, at, col, row);
+            let bit = self.pk.get_coords_for_symbol(c)[row as usize];
+            // println!(" -> {}", bit);
+            coords.push(bit);
+        }
+
+        self.pos += 1;
+        self.pk.get_symbol_for_coords(coords) as u8
+    }*/
+}
+/*
+impl<T> Read for Reader<T>
+where
+    T: Read + Seek,
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // println!("reading {} bytes at {}/{}", buf.len(), self.pos, self.len);
+        if self.len == self.pos {
+            // println!("At EOF!");
+            return Ok(0);
+        }
+
+        let mut read = 0;
+        for i in self.pos..min(self.len, buf.len() as u64) {
+            buf[i as usize] = self.read_one();
+            read += 1;
+            // println!("buf: {:x?}", buf);
+        }
+        Ok(read)
+    }
+}
+
+impl<T> Seek for Reader<T>
+where
+    T: Read + Seek,
+{
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let res = self.source.seek(pos);
+        self.pos = self.source.stream_position()?;
+        res
+    }
+}
+*/
+#[cfg(test)]
+mod tests;

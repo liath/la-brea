@@ -2,6 +2,7 @@ extern crate base64;
 
 mod cli_args;
 mod decoder;
+mod reader;
 
 use decoder::Decoder;
 use gumdrop::Options;
