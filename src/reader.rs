@@ -1,7 +1,7 @@
 use super::*;
 use std::cmp::min;
 use std::collections::HashMap;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 #[derive(Debug)]
 pub struct Source<T> {
@@ -10,10 +10,29 @@ pub struct Source<T> {
     source: T,
 }
 
+impl<T> Read for Source<T>
+where
+    T: Read + Seek,
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.source.read(buf)
+    }
+}
+
+impl<T> Seek for Source<T>
+where
+    T: Read + Seek,
+{
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.source.seek(pos)
+    }
+}
+
 #[derive(Debug)]
 pub struct Reader<T> {
+    at: u64,
     // file ids in the order they should be returned
-    index: Vec<u64>,
+    index: Vec<(u64, u64)>,
     // map file names to an id, this cuts down on memory usage when a tar has a
     // bunch of references to the same file (which is specifically why I wrote
     // this library lol)
@@ -29,6 +48,7 @@ where
 {
     pub fn new() -> Reader<T> {
         Reader {
+            at: 0,
             index: Vec::new(),
             rolodex: HashMap::new(),
             rolodex_next: 0,
@@ -70,7 +90,16 @@ where
         }
 
         // append another copy of this source to the output
-        self.index.push(id);
+        let (lid, offset) = self
+            .index
+            .last()
+            .copied()
+            .expect("failed to retrieve previous entry id for offset calc");
+        let last = self
+            .sources
+            .get(&lid)
+            .expect("failed to retrieve previous entry source for offset calc");
+        self.index.push((id, offset + 512 + last.size));
     }
 
     // TODO: made this pub for testing but it ought to be checked through the reader
@@ -151,89 +180,36 @@ where
         buf
     }
 
-    // NOTE: we dont need to generate the next header as we cross file boundaries, return what you've got and how many bytes you read and the Read implementation will make another request where we'll start nicely at the next file header
-    /*
-    fn read_at(&mut self, at: u64) -> u8 {
-        self.source
-            .seek(SeekFrom::Start(at))
-            .expect("Failed to seek input to beginning");
-
-        let mut buf: [u8; 1] = [0];
-        self.source
-            .read_exact(&mut buf)
-            .expect("Got error reading input byte: {:?}");
-        buf[0]
+    fn index_to_source_offset(&mut self, at: u64) -> (u64, u64) {
+        for (id, offset) in self.index.iter() {
+            if *offset > at {
+                return (*id, at - offset);
+            }
+        }
+        unreachable!("Ain't nobody here but us chickens");
     }
-
-    pub fn read_one(&mut self) -> u8 {
-        let dimensionality = self.pk.dimensionality() as u64;
-        let mut coords = Vec::new();
-
-        let mut gs = self.group_size;
-        if self.len - (self.len % gs) <= self.pos {
-            gs = self.len % gs
-        }
-
-        let floor = (self.pos / self.group_size) * self.group_size;
-        for dimension in 0..dimensionality {
-            let (at, col, row);
-            match self.mode.as_str() {
-                "decode" => {
-                    // `at` is the position in the coordinates counted vertically
-                    // 0369c ----- | so an at of 4 would be the X on the left here,
-                    // 147ad -X--- | giving `col` and `row` of: (1, 1)
-                    // 258be ----- |
-                    at = (self.pos - floor) + (gs * dimension);
-                    col = at / dimensionality;
-                    row = at % dimensionality;
-                }
-                "encode" => {
-                    // `at` is the position in the coordinates counted horizontally
-                    // 01234 ----X | so an at of 4 would be the X on the left here,
-                    // 56789 ----- | giving `col` and `row` of: (4, 0)
-                    // abcde ----- |
-                    at = ((self.pos - floor) * dimensionality) + dimension;
-                    col = at % gs;
-                    row = at / gs;
-                }
-                _ => unreachable!("No mode specified"),
-            }
-
-            let c = self.read_at(floor + col) as char;
-            if !self.pk.is_symbol_encodable(c) {
-                println!("got unencodable symbol? {} [{:#04x}]", c, c as u8);
-                continue;
-            }
-
-            // print!("pos: {}, at: {}, col: {}, row: {}", self.pos, at, col, row);
-            let bit = self.pk.get_coords_for_symbol(c)[row as usize];
-            // println!(" -> {}", bit);
-            coords.push(bit);
-        }
-
-        self.pos += 1;
-        self.pk.get_symbol_for_coords(coords) as u8
-    }*/
 }
-/*
+
 impl<T> Read for Reader<T>
 where
     T: Read + Seek,
 {
+    // NOTE: we dont need to generate the next header as we cross file
+    //       boundaries, return what you've got and how many bytes you read and
+    //       the Read implementation will make another request where we'll
+    //       start nicely at the next file header
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        // println!("reading {} bytes at {}/{}", buf.len(), self.pos, self.len);
-        if self.len == self.pos {
-            // println!("At EOF!");
-            return Ok(0);
+        let (id, offset) = self.index_to_source_offset(self.at);
+        if offset > 512 {
+            let source = self.sources.get_mut(&id).expect("Unable to fetch source");
+            source
+                .seek(SeekFrom::Start(offset - 512))
+                .expect("Unable to seek source");
+            return source.read(buf);
         }
 
-        let mut read = 0;
-        for i in self.pos..min(self.len, buf.len() as u64) {
-            buf[i as usize] = self.read_one();
-            read += 1;
-            // println!("buf: {:x?}", buf);
-        }
-        Ok(read)
+        let header = self.header(id)[512 - offset as usize];
+        return Cursor::new(&mut header).read(buf);
     }
 }
 
@@ -241,12 +217,8 @@ impl<T> Seek for Reader<T>
 where
     T: Read + Seek,
 {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let res = self.source.seek(pos);
-        self.pos = self.source.stream_position()?;
-        res
-    }
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {}
 }
-*/
+
 #[cfg(test)]
 mod tests;
