@@ -3,12 +3,6 @@
 version = 3
 
 [[package]]
-name = "base64"
-version = "0.21.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "604178f6c5c21f02dc555784810edfb88d34ac2c73b2eae109655649ee73ce3d"
-
-[[package]]
 name = "glob"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -38,7 +32,6 @@ dependencies = [
 name = "la-brea"
 version = "0.0.0"
 dependencies = [
- "base64",
  "glob",
  "gumdrop",
  "utf8-decode",

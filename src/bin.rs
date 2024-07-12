@@ -1,5 +1,3 @@
-extern crate base64;
-
 mod reader;
 
 use glob::glob;
