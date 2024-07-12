@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 base64 = "0.21.2"
+glob = "0.3.1"
 gumdrop = "0.8.1"
 utf8-decode = "1.0.1"
 polyfid = { path = '../polyfid/' }
@@ -16,3 +17,11 @@ strip = true
 inherits = "release"
 debug = true
 strip = false
+
+[lib]
+name = "la_brea"
+path = "src/lib.rs"
+
+[[bin]]
+name = "la_brea"
+path = "src/bin.rs"

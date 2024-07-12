@@ -1,7 +1,5 @@
-use super::*;
-use std::cmp::min;
 use std::collections::HashMap;
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, Cursor, Error, ErrorKind, Read, Seek, SeekFrom};
 
 #[derive(Debug)]
 pub struct Source<T> {
@@ -30,9 +28,12 @@ where
 
 #[derive(Debug)]
 pub struct Reader<T> {
-    at: u64,
     // file ids in the order they should be returned
     index: Vec<(u64, u64)>,
+    // total length
+    len: u64,
+    // where are we within the index if this tar actually existed already
+    pos: u64,
     // map file names to an id, this cuts down on memory usage when a tar has a
     // bunch of references to the same file (which is specifically why I wrote
     // this library lol)
@@ -48,14 +49,18 @@ where
 {
     pub fn new() -> Reader<T> {
         Reader {
-            at: 0,
             index: Vec::new(),
+            len: 0,
+            pos: 0,
             rolodex: HashMap::new(),
             rolodex_next: 0,
             sources: HashMap::new(),
         }
     }
 
+    // TODO: should we lock appends after the first read? Or maybe only when a
+    //       read goes into the trailing blocks? Also:
+    // TODO: implement trailing blocks
     pub fn append_entry(&mut self, name: String, mut source: T) {
         // create a rolodex entry if needed
         let id = if self.rolodex.contains_key(&name) {
@@ -89,21 +94,13 @@ where
             );
         }
 
+        let size = self.sources.get(&id).expect("How did we get here?").size;
         // append another copy of this source to the output
-        let (lid, offset) = self
-            .index
-            .last()
-            .copied()
-            .expect("failed to retrieve previous entry id for offset calc");
-        let last = self
-            .sources
-            .get(&lid)
-            .expect("failed to retrieve previous entry source for offset calc");
-        self.index.push((id, offset + 512 + last.size));
+        self.index.push((id, self.len));
+        self.len += 512 + size;
     }
 
-    // TODO: made this pub for testing but it ought to be checked through the reader
-    pub fn header(&mut self, id: u64) -> [u8; 512] {
+    fn header(&mut self, id: u64) -> [u8; 512] {
         // chksum is initialized to spaces per:
         // https://www.gnu.org/software/tar/manual/html_node/Standard.html
         let mut buf = [
@@ -182,7 +179,7 @@ where
 
     fn index_to_source_offset(&mut self, at: u64) -> (u64, u64) {
         for (id, offset) in self.index.iter() {
-            if *offset > at {
+            if *offset >= at {
                 return (*id, at - offset);
             }
         }
@@ -199,17 +196,26 @@ where
     //       the Read implementation will make another request where we'll
     //       start nicely at the next file header
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let (id, offset) = self.index_to_source_offset(self.at);
+        let (id, offset) = self.index_to_source_offset(self.pos);
         if offset > 512 {
             let source = self.sources.get_mut(&id).expect("Unable to fetch source");
             source
                 .seek(SeekFrom::Start(offset - 512))
                 .expect("Unable to seek source");
-            return source.read(buf);
+            let res = source.read(buf).expect("Failed to read source");
+            self.pos += res as u64;
+            return Ok(res);
         }
 
-        let header = self.header(id)[512 - offset as usize];
-        return Cursor::new(&mut header).read(buf);
+        let mut header = Cursor::new(self.header(id));
+        header
+            .seek(SeekFrom::Start(offset))
+            .expect("Somehow failed to seek header, but whhhhyyyy?");
+        let res = header
+            .read(buf)
+            .expect("Somehow failed to read header, how could that even happen???");
+        self.pos += res as u64;
+        return Ok(res);
     }
 }
 
@@ -217,7 +223,26 @@ impl<T> Seek for Reader<T>
 where
     T: Read + Seek,
 {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {}
+    fn seek(&mut self, style: SeekFrom) -> io::Result<u64> {
+        let (base_pos, offset) = match style {
+            SeekFrom::Start(n) => {
+                self.pos = n;
+                return Ok(n);
+            }
+            SeekFrom::End(n) => (self.len, n),
+            SeekFrom::Current(n) => (self.pos, n),
+        };
+        match base_pos.checked_add_signed(offset) {
+            Some(n) => {
+                self.pos = n;
+                Ok(self.pos)
+            }
+            None => Err(Error::new(
+                ErrorKind::InvalidInput,
+                "invalid seek to a negative or overflowing position",
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
