@@ -41,16 +41,6 @@ dependencies = [
  "base64",
  "glob",
  "gumdrop",
- "polyfid",
- "utf8-decode",
-]
-
-[[package]]
-name = "polyfid"
-version = "0.0.0"
-dependencies = [
- "base64",
- "gumdrop",
  "utf8-decode",
 ]
 
