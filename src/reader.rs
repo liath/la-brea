@@ -43,6 +43,15 @@ pub struct Reader<T> {
     sources: HashMap<u64, Source<T>>,
 }
 
+impl<T> Default for Reader<T>
+where
+    T: Read + Seek,
+{
+    fn default() -> Self {
+        Reader::new()
+    }
+}
+
 impl<T> Reader<T>
 where
     T: Read + Seek,
@@ -64,10 +73,10 @@ where
     pub fn append_entry(&mut self, name: String, mut source: T) {
         // create a rolodex entry if needed
         let id = if self.rolodex.contains_key(&name) {
-            self.rolodex
+            *self
+                .rolodex
                 .get(&name)
                 .expect("rolodex has entry but not a value?")
-                .clone()
         } else {
             let i = self.rolodex_next;
             self.rolodex_next += 1;
@@ -76,7 +85,7 @@ where
         };
 
         // create a sources entry if needed
-        if !self.sources.contains_key(&id) {
+        self.sources.entry(id).or_insert({
             let size = source
                 .seek(SeekFrom::End(0))
                 .expect("Couldn't get length of source");
@@ -84,15 +93,12 @@ where
                 .seek(SeekFrom::Start(0))
                 .expect("Couldn't rewind source");
 
-            self.sources.insert(
-                id,
-                Source {
-                    name: name.clone(),
-                    size,
-                    source,
-                },
-            );
-        }
+            Source {
+                name: name.clone(),
+                size,
+                source,
+            }
+        });
 
         let size = self.sources.get(&id).expect("How did we get here?").size;
         // append another copy of this source to the output
@@ -177,13 +183,16 @@ where
         buf
     }
 
-    fn index_to_source_offset(&mut self, at: u64) -> (u64, u64) {
-        for (id, offset) in self.index.iter() {
-            if *offset >= at {
-                return (*id, at - offset);
+    fn index_to_source_offset(&mut self, at: u64) -> (u64, u64, bool) {
+        println!("i2so -> {}", at);
+
+        for (id, offset) in self.index.iter().rev() {
+            println!("  -> id: {}, offset: {}", id, offset);
+            if *offset <= at {
+                return (*id, at - offset, false);
             }
         }
-        unreachable!("Ain't nobody here but us chickens");
+        (0, at - self.len, true)
     }
 }
 
@@ -191,13 +200,31 @@ impl<T> Read for Reader<T>
 where
     T: Read + Seek,
 {
-    // NOTE: we dont need to generate the next header as we cross file
-    //       boundaries, return what you've got and how many bytes you read and
-    //       the Read implementation will make another request where we'll
-    //       start nicely at the next file header
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let (id, offset) = self.index_to_source_offset(self.pos);
-        if offset > 512 {
+        // nothing to output yet
+        if self.len == 0 {
+            return Ok(0);
+        }
+
+        let (id, offset, end) = self.index_to_source_offset(self.pos);
+        println!(
+            "pos: {}, len: {}, id: {}, offset: {}, end: {}",
+            self.pos, self.len, id, offset, end
+        );
+
+        if end {
+            // TODO: should we lock at this point? It would prevent our output
+            //       requiring --ignore-zeros
+            let mut trailer = Cursor::new([0; 1024]);
+            trailer
+                .seek(SeekFrom::Start(offset))
+                .expect("The trailer seek position is weird");
+            let res = trailer.read(buf).expect("Failed to write trailer");
+            self.pos += res as u64;
+            return Ok(res);
+        }
+
+        if offset >= 512 {
             let source = self.sources.get_mut(&id).expect("Unable to fetch source");
             source
                 .seek(SeekFrom::Start(offset - 512))
@@ -215,7 +242,7 @@ where
             .read(buf)
             .expect("Somehow failed to read header, how could that even happen???");
         self.pos += res as u64;
-        return Ok(res);
+        Ok(res)
     }
 }
 
