@@ -30,10 +30,12 @@ where
 pub struct Reader<T> {
     // file ids in the order they should be returned
     index: Vec<(u64, u64)>,
-    // total length
+    // length not accounting for blocking_factor
     len: u64,
     // where are we within the index if this tar actually existed already
     pos: u64,
+    // tars are grouped in `blocking_factor`*512 long "records"
+    record_size: f64,
     // map file names to an id, this cuts down on memory usage when a tar has a
     // bunch of references to the same file (which is specifically why I wrote
     // this library lol)
@@ -57,19 +59,23 @@ where
     T: Read + Seek,
 {
     pub fn new() -> Reader<T> {
+        // default per https://www.gnu.org/software/tar/manual/html_node/Blocking-Factor.html
+        // TODO: maybe we expose this to callers?
+        let blocking_factor = 20;
         Reader {
             index: Vec::new(),
             len: 0,
             pos: 0,
+            record_size: (blocking_factor as f64) * 512.0,
             rolodex: HashMap::new(),
-            rolodex_next: 0,
+            // start at one so we know index_to_source_offset returning a 0 is
+            // indicating we're in the trailing zeros (`end` does this too but
+            // I wanna be extra clear and this costs us nothing)
+            rolodex_next: 1,
             sources: HashMap::new(),
         }
     }
 
-    // TODO: should we lock appends after the first read? Or maybe only when a
-    //       read goes into the trailing blocks? Also:
-    // TODO: implement trailing blocks
     pub fn append_entry(&mut self, name: String, mut source: T) {
         // create a rolodex entry if needed
         let id = if self.rolodex.contains_key(&name) {
@@ -103,7 +109,7 @@ where
         let size = self.sources.get(&id).expect("How did we get here?").size;
         // append another copy of this source to the output
         self.index.push((id, self.len));
-        self.len += 512 + size;
+        self.len += 512 + ((size as f64 / 512.0).ceil() as u64 * 512);
     }
 
     fn header(&mut self, id: u64) -> [u8; 512] {
@@ -184,15 +190,29 @@ where
     }
 
     fn index_to_source_offset(&mut self, at: u64) -> (u64, u64, bool) {
-        println!("i2so -> {}", at);
+        // println!("i2so -> {}", at);
 
-        for (id, offset) in self.index.iter().rev() {
-            println!("  -> id: {}, offset: {}", id, offset);
-            if *offset <= at {
-                return (*id, at - offset, false);
+        let mut lid = 0;
+        let mut loff = 0;
+        //      love?
+
+        for (id, offset) in self.index.iter() {
+            // println!("     -> id: {}, offset: {}", id, offset);
+            if *offset > at {
+                return (lid, at - loff, false);
             }
+            lid = *id;
+            loff = *offset;
+        }
+        if at < self.len {
+            return (lid, at - loff, false);
         }
         (0, at - self.len, true)
+    }
+
+    fn len(&mut self) -> u64 {
+        // blocks are grouped in record
+        ((self.len as f64 / self.record_size).ceil() * self.record_size) as u64
     }
 }
 
@@ -202,7 +222,7 @@ where
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // nothing to output yet
-        if self.len == 0 {
+        if self.len == 0 || self.pos == self.len() {
             return Ok(0);
         }
 
@@ -214,23 +234,49 @@ where
 
         if end {
             // TODO: should we lock at this point? It would prevent our output
-            //       requiring --ignore-zeros
-            let mut trailer = Cursor::new([0; 1024]);
+            //       requiring --ignore-zeros for files where an append happens
+            //       after reading the trailer.
+            let mut trailer = Cursor::new([0; 8192]);
+
+            // how much trailer is there left to get to the record-size edge
+            // in at most blocks of 8192, as that seems to be the chunk size
+            // io::Read uses
+            let size = (self.len() - self.len) % 8192;
+
+            // adjust to remaining read size
             trailer
-                .seek(SeekFrom::Start(offset))
+                .seek(SeekFrom::Start(8192 - size))
                 .expect("The trailer seek position is weird");
+
             let res = trailer.read(buf).expect("Failed to write trailer");
             self.pos += res as u64;
+            println!("wrote {} bytes of trailer", res);
             return Ok(res);
         }
 
         if offset >= 512 {
             let source = self.sources.get_mut(&id).expect("Unable to fetch source");
+            println!("source size: {}", source.size);
+
+            // handle padding between files
+            if source.size < offset {
+                let mut padding = Cursor::new([0; 512]);
+                let pad_len = source.size % 512;
+                padding
+                    .seek(SeekFrom::Start(pad_len))
+                    .expect("Failed to adjust tar page padding buffer");
+                let res = padding.read(buf).expect("Failed to read padding buffer");
+                self.pos += res as u64;
+                println!("wrote {} bytes of padding", res);
+                return Ok(res);
+            }
+
             source
                 .seek(SeekFrom::Start(offset - 512))
                 .expect("Unable to seek source");
             let res = source.read(buf).expect("Failed to read source");
             self.pos += res as u64;
+            println!("wrote {} bytes of content", res);
             return Ok(res);
         }
 
@@ -242,6 +288,7 @@ where
             .read(buf)
             .expect("Somehow failed to read header, how could that even happen???");
         self.pos += res as u64;
+        println!("wrote {} bytes of header", res);
         Ok(res)
     }
 }

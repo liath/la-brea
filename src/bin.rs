@@ -67,7 +67,7 @@ mod cli {
 
     #[test]
     fn basic() {
-        let output = "./tmp/cli-basic-out.txt";
+        let output = "./tmp/cli-basic-out.tar";
         // clean up file if needed
         if fs::metadata(output).is_ok() {
             let _ = fs::remove_file(output);
@@ -79,7 +79,22 @@ mod cli {
         let res = fs::read(output).expect("failed to read output");
         let expected = fs::read("./fixtures/goots.tar").expect("failed to read fixture");
 
-        assert_eq!(res, [0]);
-        // assert_eq!(res, expected);
+        // filename
+        assert_eq!(res[0..100], expected[0..100]);
+
+        // file content
+        let chunk_size = 100;
+        let mut res_chunks = res[512..].chunks(chunk_size);
+        let mut expected_chunks = expected[512..].chunks(chunk_size);
+
+        for i in 0..expected_chunks.len() {
+            assert_eq!(
+                res_chunks.next(),
+                expected_chunks.next(),
+                "diff at offset {}/{}",
+                (i * chunk_size) + 512,
+                expected.len()
+            );
+        }
     }
 }
