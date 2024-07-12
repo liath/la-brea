@@ -113,6 +113,7 @@ where
     }
 
     fn header(&mut self, id: u64) -> [u8; 512] {
+        // TODO: Stop hardcoding almost every header field
         // chksum is initialized to spaces per:
         // https://www.gnu.org/software/tar/manual/html_node/Standard.html
         let mut buf = [
