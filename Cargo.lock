@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "la-brea"
+name = "la_brea"
 version = "0.0.0"
 dependencies = [
  "glob",
