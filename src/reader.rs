@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::collections::HashMap;
 use std::io::{self, Cursor, Error, ErrorKind, Read, Seek, SeekFrom};
 
@@ -110,6 +111,7 @@ where
         // append another copy of this source to the output
         self.index.push((id, self.len));
         self.len += 512 + ((size as f64 / 512.0).ceil() as u64 * 512);
+        println!("la_brea: now {} bytes long", self.len);
     }
 
     fn header(&mut self, id: u64) -> [u8; 512] {
@@ -175,13 +177,13 @@ where
         }
 
         let size = format!("{:0>11o}", f.size);
-        println!("size: {}", size);
+        // println!("size: {}", size);
         for (i, c) in size.chars().enumerate() {
             buf[124 + i] = c as u8;
         }
 
         let chksum = format!("{:0>6o}", buf.iter().fold(0u64, |sum, i| sum + (*i as u64)));
-        println!("chksum: {}", chksum);
+        // println!("chksum: {}", chksum);
         for (i, c) in chksum.chars().enumerate() {
             buf[148 + i] = c as u8;
         }
@@ -229,9 +231,53 @@ where
 
         let (id, offset, end) = self.index_to_source_offset(self.pos);
         println!(
-            "pos: {}, len: {}, id: {}, offset: {}, end: {}",
+            "lb -> pos: {}, len: {}, id: {}, offset: {}, end: {}",
             self.pos, self.len, id, offset, end
         );
+
+        let mut wrote = 0;
+        if offset < 512 && !end {
+            let mut header = Cursor::new(self.header(id));
+            header
+                .seek(SeekFrom::Start(offset))
+                .expect("Somehow failed to seek header, but whhhhyyyy?");
+            let res = header
+                .read(buf)
+                .expect("Somehow failed to read header, how could that even happen???");
+
+            wrote += res as u64;
+            // println!("wrote {} bytes of header", res);
+        }
+
+        if offset + wrote >= 512 && !end {
+            let source = self.sources.get_mut(&id).expect("Unable to fetch source");
+            // println!("source size: {}", source.size);
+
+            if source.size > offset + wrote {
+                source
+                    .seek(SeekFrom::Start(offset + wrote - 512))
+                    .expect("Unable to seek source");
+                let res = source
+                    .read(&mut buf[wrote as usize..])
+                    .expect("Failed to read source");
+                wrote += res as u64;
+                // println!("wrote {} bytes of content", res);
+            }
+
+            // handle padding between files
+            if source.size < offset + wrote {
+                let mut padding = Cursor::new([0; 512]);
+                let pad_len = source.size % 512;
+                padding
+                    .seek(SeekFrom::Start(pad_len))
+                    .expect("Failed to adjust tar page padding buffer");
+                let res = padding
+                    .read(&mut buf[wrote as usize..])
+                    .expect("Failed to read padding buffer");
+                // println!("wrote {} bytes of padding", res);
+                wrote += res as u64;
+            }
+        }
 
         if end {
             // TODO: should we lock at this point? It would prevent our output
@@ -242,55 +288,27 @@ where
             // how much trailer is there left to get to the record-size edge
             // in at most blocks of 8192, as that seems to be the chunk size
             // io::Read uses
-            let size = (self.len() - self.len) % 8192;
+            let size = min(self.len() - self.pos, 8192);
 
             // adjust to remaining read size
             trailer
                 .seek(SeekFrom::Start(8192 - size))
                 .expect("The trailer seek position is weird");
 
-            let res = trailer.read(buf).expect("Failed to write trailer");
-            self.pos += res as u64;
-            println!("wrote {} bytes of trailer", res);
-            return Ok(res);
+            let res = trailer
+                .read(&mut buf[wrote as usize..])
+                .expect("Failed to write trailer");
+            wrote += res as u64;
+            println!(
+                "wrote {}/{} bytes at {} to pad out trailer",
+                res,
+                self.len(),
+                self.pos
+            );
         }
 
-        if offset >= 512 {
-            let source = self.sources.get_mut(&id).expect("Unable to fetch source");
-            println!("source size: {}", source.size);
-
-            // handle padding between files
-            if source.size < offset {
-                let mut padding = Cursor::new([0; 512]);
-                let pad_len = source.size % 512;
-                padding
-                    .seek(SeekFrom::Start(pad_len))
-                    .expect("Failed to adjust tar page padding buffer");
-                let res = padding.read(buf).expect("Failed to read padding buffer");
-                self.pos += res as u64;
-                println!("wrote {} bytes of padding", res);
-                return Ok(res);
-            }
-
-            source
-                .seek(SeekFrom::Start(offset - 512))
-                .expect("Unable to seek source");
-            let res = source.read(buf).expect("Failed to read source");
-            self.pos += res as u64;
-            println!("wrote {} bytes of content", res);
-            return Ok(res);
-        }
-
-        let mut header = Cursor::new(self.header(id));
-        header
-            .seek(SeekFrom::Start(offset))
-            .expect("Somehow failed to seek header, but whhhhyyyy?");
-        let res = header
-            .read(buf)
-            .expect("Somehow failed to read header, how could that even happen???");
-        self.pos += res as u64;
-        println!("wrote {} bytes of header", res);
-        Ok(res)
+        self.pos += wrote;
+        Ok(wrote as usize)
     }
 }
 
@@ -302,14 +320,16 @@ where
         let (base_pos, offset) = match style {
             SeekFrom::Start(n) => {
                 self.pos = n;
+                println!("lb seeking to: {}", n);
                 return Ok(n);
             }
-            SeekFrom::End(n) => (self.len, n),
+            SeekFrom::End(n) => (self.len(), n),
             SeekFrom::Current(n) => (self.pos, n),
         };
         match base_pos.checked_add_signed(offset) {
             Some(n) => {
                 self.pos = n;
+                println!("lb seeking to: {}", n);
                 Ok(self.pos)
             }
             None => Err(Error::new(
