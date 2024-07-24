@@ -192,7 +192,7 @@ where
         buf
     }
 
-    fn index_to_source_offset(&mut self, at: u64) -> (u64, u64, bool) {
+    fn index_to_source_offset(&mut self, at: u64) -> (u64, u64, u64, bool) {
         // println!("i2so -> {}", at);
 
         let mut lid = 0;
@@ -202,15 +202,15 @@ where
         for (id, offset) in self.index.iter() {
             // println!("     -> id: {}, offset: {}", id, offset);
             if *offset > at {
-                return (lid, at - loff, false);
+                return (lid, at - loff, *offset, false);
             }
             lid = *id;
             loff = *offset;
         }
         if at < self.len {
-            return (lid, at - loff, false);
+            return (lid, at - loff, self.len(), false);
         }
-        (0, at - self.len, true)
+        (0, at - self.len, self.len(), true)
     }
 
     fn len(&mut self) -> u64 {
@@ -229,11 +229,16 @@ where
             return Ok(0);
         }
 
-        let (id, offset, end) = self.index_to_source_offset(self.pos);
-        println!(
-            "lb -> pos: {}, len: {}, id: {}, offset: {}, end: {}",
-            self.pos, self.len, id, offset, end
-        );
+        let (id, offset, boundary, end) = self.index_to_source_offset(self.pos);
+        /* println!(
+            "lb -> pos: {}, len: {}, desired: {}, id: {}, offset: {}, end: {}",
+            self.pos,
+            self.len,
+            buf.len(),
+            id,
+            offset,
+            end
+        ); */
 
         let mut wrote = 0;
         if offset < 512 && !end {
@@ -260,20 +265,28 @@ where
                 let res = source
                     .read(&mut buf[wrote as usize..])
                     .expect("Failed to read source");
+
                 wrote += res as u64;
                 // println!("wrote {} bytes of content", res);
             }
 
             // handle padding between files
-            if source.size < offset + wrote {
+            /*println!(
+                "lb | offset: {} + wrote: {} <> boundary: {}",
+                offset, wrote, boundary
+            );*/
+            if source.size < offset + wrote && offset + wrote < boundary {
                 let mut padding = Cursor::new([0; 512]);
-                let pad_len = source.size % 512;
+
+                let take_pad = min(512, boundary - (offset + wrote));
+                // println!("lb | take_pad: {}", 512 - take_pad);
                 padding
-                    .seek(SeekFrom::Start(pad_len))
+                    .seek(SeekFrom::Start(512 - take_pad))
                     .expect("Failed to adjust tar page padding buffer");
                 let res = padding
                     .read(&mut buf[wrote as usize..])
                     .expect("Failed to read padding buffer");
+
                 // println!("wrote {} bytes of padding", res);
                 wrote += res as u64;
             }
@@ -299,15 +312,23 @@ where
                 .read(&mut buf[wrote as usize..])
                 .expect("Failed to write trailer");
             wrote += res as u64;
-            println!(
+            /*println!(
                 "wrote {}/{} bytes at {} to pad out trailer",
                 res,
                 self.len(),
                 self.pos
-            );
+            );*/
         }
 
         self.pos += wrote;
+
+        // if we aren't at the end of the archive and the output buffer isn't
+        // full call ourselves again to start reading the next file
+        if self.pos != self.len() && wrote < buf.len() as u64 {
+            let res = self.read(&mut buf[wrote as usize..]).unwrap();
+            wrote += res as u64;
+        }
+
         Ok(wrote as usize)
     }
 }
