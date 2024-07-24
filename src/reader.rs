@@ -229,15 +229,11 @@ where
             return Ok(0);
         }
 
+        let want = buf.len() as u64;
         let (id, offset, boundary, end) = self.index_to_source_offset(self.pos);
         /* println!(
-            "lb -> pos: {}, len: {}, desired: {}, id: {}, offset: {}, end: {}",
-            self.pos,
-            self.len,
-            buf.len(),
-            id,
-            offset,
-            end
+            "lb[{}] pos: {}, len: {}, want: {}, id: {}, offset: {}, end: {}",
+            id, self.pos, self.len, want, id, offset, end
         ); */
 
         let mut wrote = 0;
@@ -251,14 +247,16 @@ where
                 .expect("Somehow failed to read header, how could that even happen???");
 
             wrote += res as u64;
-            // println!("wrote {} bytes of header", res);
+            // println!("lb[{}] wrote {} bytes of header", id, res);
         }
 
-        if offset + wrote >= 512 && !end {
+        if wrote < want && !end {
             let source = self.sources.get_mut(&id).expect("Unable to fetch source");
-            // println!("source size: {}", source.size);
+            // position where we start emitting the padding between blocks
+            let pad_start = 512 + source.size;
 
-            if source.size > offset + wrote {
+            // is there more file than we've written?
+            if pad_start > offset + wrote {
                 source
                     .seek(SeekFrom::Start(offset + wrote - 512))
                     .expect("Unable to seek source");
@@ -267,28 +265,22 @@ where
                     .expect("Failed to read source");
 
                 wrote += res as u64;
-                // println!("wrote {} bytes of content", res);
+                // println!("lb[{}->{}] wrote {} bytes of content", id, source.name, res);
             }
 
             // handle padding between files
-            /*println!(
-                "lb | offset: {} + wrote: {} <> boundary: {}",
-                offset, wrote, boundary
-            );*/
-            if source.size < offset + wrote && offset + wrote < boundary {
-                let mut padding = Cursor::new([0; 512]);
+            if wrote < want && pad_start <= offset + wrote && offset + wrote < boundary {
+                let pad_len = min(want, boundary - offset) - wrote;
+                let padding = vec![0; pad_len as usize];
 
-                let take_pad = min(512, boundary - (offset + wrote));
-                // println!("lb | take_pad: {}", 512 - take_pad);
-                padding
-                    .seek(SeekFrom::Start(512 - take_pad))
-                    .expect("Failed to adjust tar page padding buffer");
-                let res = padding
-                    .read(&mut buf[wrote as usize..])
-                    .expect("Failed to read padding buffer");
+                buf[wrote as usize..(wrote + min(want, pad_len)) as usize]
+                    .copy_from_slice(&padding);
 
-                // println!("wrote {} bytes of padding", res);
-                wrote += res as u64;
+                /* println!(
+                    "lb[{}->{}] wrote {} bytes of padding",
+                    id, source.name, pad_len
+                ); */
+                wrote += pad_len;
             }
         }
 
@@ -312,19 +304,20 @@ where
                 .read(&mut buf[wrote as usize..])
                 .expect("Failed to write trailer");
             wrote += res as u64;
-            /*println!(
-                "wrote {}/{} bytes at {} to pad out trailer",
+            /* println!(
+                "lb[{}] wrote {}/{} bytes at {} to pad out trailer",
+                id,
                 res,
                 self.len(),
                 self.pos
-            );*/
+            ); */
         }
 
         self.pos += wrote;
 
         // if we aren't at the end of the archive and the output buffer isn't
         // full call ourselves again to start reading the next file
-        if self.pos != self.len() && wrote < buf.len() as u64 {
+        if self.pos != self.len() && wrote < want {
             let res = self.read(&mut buf[wrote as usize..]).unwrap();
             wrote += res as u64;
         }
@@ -341,7 +334,7 @@ where
         let (base_pos, offset) = match style {
             SeekFrom::Start(n) => {
                 self.pos = n;
-                println!("lb seeking to: {}", n);
+                // println!("lb seeking to: {}", n);
                 return Ok(n);
             }
             SeekFrom::End(n) => (self.len(), n),
@@ -350,7 +343,7 @@ where
         match base_pos.checked_add_signed(offset) {
             Some(n) => {
                 self.pos = n;
-                println!("lb seeking to: {}", n);
+                // println!("lb seeking to: {}", n);
                 Ok(self.pos)
             }
             None => Err(Error::new(
