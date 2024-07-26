@@ -1,3 +1,4 @@
+use nohash_hasher::BuildNoHashHasher;
 use std::cmp::min;
 use std::collections::HashMap;
 use std::io::{self, Cursor, Error, ErrorKind, Read, Seek, SeekFrom};
@@ -33,6 +34,7 @@ pub struct Reader<T> {
     index: Vec<(u64, u64)>,
     // length not accounting for blocking_factor
     len: u64,
+    len_total: u64,
     // where are we within the index if this tar actually existed already
     pos: u64,
     // tars are grouped in `blocking_factor`*512 long "records"
@@ -43,7 +45,7 @@ pub struct Reader<T> {
     rolodex: HashMap<String, u64>,
     rolodex_next: u64,
     // map of file IDs to their underlying ReadSeeks
-    sources: HashMap<u64, Source<T>>,
+    sources: HashMap<u64, Source<T>, nohash_hasher::BuildNoHashHasher<u64>>,
 }
 
 impl<T> Default for Reader<T>
@@ -66,6 +68,7 @@ where
         Reader {
             index: Vec::new(),
             len: 0,
+            len_total: 0,
             pos: 0,
             record_size: (blocking_factor as f64) * 512.0,
             rolodex: HashMap::new(),
@@ -73,7 +76,7 @@ where
             // indicating we're in the trailing zeros (`end` does this too but
             // I wanna be extra clear and this costs us nothing)
             rolodex_next: 1,
-            sources: HashMap::new(),
+            sources: HashMap::with_hasher(BuildNoHashHasher::default()),
         }
     }
 
@@ -111,6 +114,9 @@ where
         // append another copy of this source to the output
         self.index.push((id, self.len));
         self.len += 512 + ((size as f64 / 512.0).ceil() as u64 * 512);
+        // blocks are grouped in record
+        self.len_total = ((self.len as f64 / self.record_size).ceil() * self.record_size) as u64;
+
         println!("la_brea: now {} bytes long", self.len);
     }
 
@@ -208,14 +214,9 @@ where
             loff = *offset;
         }
         if at < self.len {
-            return (lid, at - loff, self.len(), false);
+            return (lid, at - loff, self.len_total, false);
         }
-        (0, at - self.len, self.len(), true)
-    }
-
-    fn len(&mut self) -> u64 {
-        // blocks are grouped in record
-        ((self.len as f64 / self.record_size).ceil() * self.record_size) as u64
+        (0, at - self.len, self.len_total, true)
     }
 }
 
@@ -224,8 +225,8 @@ where
     T: Read + Seek,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        // nothing to output yet
-        if self.len == 0 || self.pos == self.len() {
+        // nothing to output yet or EOF
+        if self.len == 0 || self.pos == self.len_total {
             return Ok(0);
         }
 
@@ -293,7 +294,7 @@ where
             // how much trailer is there left to get to the record-size edge
             // in at most blocks of 8192, as that seems to be the chunk size
             // io::Read uses
-            let size = min(self.len() - self.pos, 8192);
+            let size = min(self.len_total - self.pos, 8192);
 
             // adjust to remaining read size
             trailer
@@ -308,7 +309,7 @@ where
                 "lb[{}] wrote {}/{} bytes at {} to pad out trailer",
                 id,
                 res,
-                self.len(),
+                self.len_total,
                 self.pos
             ); */
         }
@@ -317,7 +318,7 @@ where
 
         // if we aren't at the end of the archive and the output buffer isn't
         // full call ourselves again to start reading the next file
-        if self.pos != self.len() && wrote < want {
+        if self.pos != self.len_total && wrote < want {
             let res = self.read(&mut buf[wrote as usize..]).unwrap();
             wrote += res as u64;
         }
@@ -337,7 +338,7 @@ where
                 // println!("lb seeking to: {}", n);
                 return Ok(n);
             }
-            SeekFrom::End(n) => (self.len(), n),
+            SeekFrom::End(n) => (self.len_total, n),
             SeekFrom::Current(n) => (self.pos, n),
         };
         match base_pos.checked_add_signed(offset) {
