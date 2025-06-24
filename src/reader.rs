@@ -226,7 +226,7 @@ where
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // nothing to output yet or EOF
-        if self.len == 0 || self.pos == self.len_total {
+        if self.len == 0 || self.pos >= self.len_total {
             return Ok(0);
         }
 
@@ -286,29 +286,15 @@ where
         }
 
         if end {
-            // TODO: should we lock at this point? It would prevent our output
-            //       requiring --ignore-zeros for files where an append happens
-            //       after reading the trailer.
-            let mut trailer = Cursor::new([0; 8192]);
-
             // how much trailer is there left to get to the record-size edge
             // in at most blocks of 8192, as that seems to be the chunk size
             // io::Read uses
-            let size = min(self.len_total - self.pos, 8192);
-
-            // adjust to remaining read size
-            trailer
-                .seek(SeekFrom::Start(8192 - size))
-                .expect("The trailer seek position is weird");
-
-            let res = trailer
-                .read(&mut buf[wrote as usize..])
-                .expect("Failed to write trailer");
-            wrote += res as u64;
+            let size = min(self.len_total - self.pos, buf.len() as u64 - wrote);
+            wrote += size;
             /* println!(
                 "lb[{}] wrote {}/{} bytes at {} to pad out trailer",
                 id,
-                res,
+                size,
                 self.len_total,
                 self.pos
             ); */
