@@ -66,7 +66,7 @@ where
         // TODO: maybe we expose this to callers?
         let blocking_factor = 20;
         Reader {
-            index: Vec::new(),
+            index: Vec::with_capacity(8192),
             len: 0,
             len_total: 0,
             pos: 0,
@@ -80,28 +80,21 @@ where
         }
     }
 
+    // Note: this is keyed on filename so if you're appending the same file multiple times just
+    // pass an empty cursor, or if you want the same filename with different content submit a PR
     pub fn append_entry(&mut self, name: String, mut source: T) {
         // create a rolodex entry if needed
-        let id = if self.rolodex.contains_key(&name) {
-            *self
-                .rolodex
-                .get(&name)
-                .expect("rolodex has entry but not a value?")
-        } else {
+        let id = self.rolodex.entry(name.clone()).or_insert_with(|| {
             let i = self.rolodex_next;
             self.rolodex_next += 1;
-            self.rolodex.insert(name.clone(), i);
             i
-        };
+        });
 
         // create a sources entry if needed
-        self.sources.entry(id).or_insert({
+        self.sources.entry(*id).or_insert_with(|| {
             let size = source
                 .seek(SeekFrom::End(0))
                 .expect("Couldn't get length of source");
-            source
-                .seek(SeekFrom::Start(0))
-                .expect("Couldn't rewind source");
 
             Source {
                 name: name.clone(),
@@ -110,14 +103,14 @@ where
             }
         });
 
-        let size = self.sources.get(&id).expect("How did we get here?").size;
-        // append another copy of this source to the output
-        self.index.push((id, self.len));
+        let size = self.sources.get(id).expect("How did we get here?").size;
+        // append a copy of this source to the output
+        self.index.push((*id, self.len));
         self.len += 512 + ((size as f64 / 512.0).ceil() as u64 * 512);
         // blocks are grouped in record
         self.len_total = ((self.len as f64 / self.record_size).ceil() * self.record_size) as u64;
 
-        println!("la_brea: now {} bytes long", self.len);
+        //println!("lb | now {} bytes long -> {:?}", self.len, self.index);
     }
 
     fn header(&mut self, id: u64) -> [u8; 512] {
@@ -232,10 +225,10 @@ where
 
         let want = buf.len() as u64;
         let (id, offset, boundary, end) = self.index_to_source_offset(self.pos);
-        /* println!(
-            "lb[{}] pos: {}, len: {}, want: {}, id: {}, offset: {}, end: {}",
-            id, self.pos, self.len, want, id, offset, end
-        ); */
+        /*println!(
+            "lb[{}] pos: {}, len: {}, want: {}, id: {}, offset: {}, boundary: {}, end: {}",
+            id, self.pos, self.len, want, id, offset, boundary, end
+        );*/
 
         let mut wrote = 0;
         if offset < 512 && !end {
@@ -248,7 +241,7 @@ where
                 .expect("Somehow failed to read header, how could that even happen???");
 
             wrote += res as u64;
-            // println!("lb[{}] wrote {} bytes of header", id, res);
+            //println!("lb[{}] wrote {} bytes of header", id, res);
         }
 
         if wrote < want && !end {
@@ -266,21 +259,21 @@ where
                     .expect("Failed to read source");
 
                 wrote += res as u64;
-                // println!("lb[{}->{}] wrote {} bytes of content", id, source.name, res);
+                //println!("lb[{}->{}] wrote {} bytes of content", id, source.name, res);
             }
 
             // handle padding between files
             if wrote < want && pad_start <= offset + wrote && offset + wrote < boundary {
-                let pad_len = min(want, boundary - offset) - wrote;
+                let pad_len = min(want - wrote, boundary - self.pos - wrote);
                 let padding = vec![0; pad_len as usize];
 
-                buf[wrote as usize..(wrote + min(want, pad_len)) as usize]
+                buf[wrote as usize..(wrote + pad_len) as usize]
                     .copy_from_slice(&padding);
 
-                /* println!(
+                /*println!(
                     "lb[{}->{}] wrote {} bytes of padding",
                     id, source.name, pad_len
-                ); */
+                );*/
                 wrote += pad_len;
             }
         }
@@ -291,13 +284,13 @@ where
             // io::Read uses
             let size = min(self.len_total - self.pos, buf.len() as u64 - wrote);
             wrote += size;
-            /* println!(
+            /*println!(
                 "lb[{}] wrote {}/{} bytes at {} to pad out trailer",
                 id,
                 size,
                 self.len_total,
                 self.pos
-            ); */
+            );*/
         }
 
         self.pos += wrote;
